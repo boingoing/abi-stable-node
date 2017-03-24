@@ -349,13 +349,19 @@ class CallbackWrapperBase : public CallbackWrapper {
         v8::Local<v8::External>::Cast(
             _cbdata->GetInternalField(kInternalFieldIndex))->Value());
     v8::Isolate* isolate = _cbinfo.GetIsolate();
+
     napi_env env = static_cast<napi_env>(
         v8::Local<v8::External>::Cast(
             _cbdata->GetInternalField(kEnvIndex))->Value());
 
     // Make sure any errors encountered last time we were in N-API are gone.
     napi_clear_last_error(env);
-    cb(env, cbinfo_wrapper);
+    
+    napi_value result = cb(env, cbinfo_wrapper);
+
+    if (result != nullptr) {
+      this->SetReturnValue(result);
+    }
 
     if (!env->last_exception.IsEmpty()) {
       isolate->ThrowException(
@@ -665,6 +671,7 @@ const char* error_messages[] = {nullptr,
                                 "Invalid pointer passed as argument",
                                 "An object was expected",
                                 "A string was expected",
+                                "A string or symbol was expected",
                                 "A function was expected",
                                 "A number was expected",
                                 "A boolean was expected",
@@ -781,14 +788,24 @@ napi_status napi_define_class(napi_env env,
       continue;
     }
 
-    v8::Local<v8::String> property_name;
-    CHECK_NEW_FROM_UTF8(env, property_name, p->utf8name);
+    v8::Local<v8::Name> property_name;
+
+    if (p->utf8name != nullptr) {
+      CHECK_NEW_FROM_UTF8(env, property_name, p->utf8name);
+    } else {
+      v8::Local<v8::Value> property_value =
+        v8impl::V8LocalValueFromJsValue(p->name);
+
+      RETURN_STATUS_IF_FALSE(env, property_value->IsName(), napi_name_expected);
+      property_name = property_value.As<v8::Name>();
+    }
+
     v8::PropertyAttribute attributes =
         v8impl::V8PropertyAttributesFromAttributes(p->attributes);
 
     // This code is similar to that in napi_define_property(); the
     // difference is it applies to a template instead of an object.
-    if (p->method) {
+    if (p->method != nullptr) {
       v8::Local<v8::Object> cbdata =
           v8impl::CreateFunctionCallbackData(env, p->method, p->data);
 
@@ -799,10 +816,9 @@ napi_status napi_define_class(napi_env env,
                                     v8impl::FunctionCallbackWrapper::Invoke,
                                     cbdata,
                                     v8::Signature::New(isolate, tpl));
-      t->SetClassName(property_name);
 
       tpl->PrototypeTemplate()->Set(property_name, t, attributes);
-    } else if (p->getter || p->setter) {
+    } else if (p->getter != nullptr || p->setter != nullptr) {
       v8::Local<v8::Object> cbdata = v8impl::CreateAccessorCallbackData(
         env, p->getter, p->setter, p->data);
 
@@ -840,18 +856,6 @@ napi_status napi_define_class(napi_env env,
     if (status != napi_ok) return status;
   }
 
-  return GET_RETURN_STATUS(env);
-}
-
-napi_status napi_set_return_value(napi_env env,
-                                  napi_callback_info cbinfo,
-                                  napi_value value) {
-  NAPI_PREAMBLE(env);
-
-  v8impl::CallbackWrapper* info =
-      reinterpret_cast<v8impl::CallbackWrapper*>(cbinfo);
-
-  info->SetReturnValue(value);
   return GET_RETURN_STATUS(env);
 }
 
@@ -1090,14 +1094,23 @@ napi_status napi_define_properties(napi_env env,
   for (size_t i = 0; i < property_count; i++) {
     const napi_property_descriptor* p = &properties[i];
 
-    v8::Local<v8::Name> name;
-    CHECK_NEW_FROM_UTF8(env, name, p->utf8name);
+    v8::Local<v8::Name> property_name;
+
+    if (p->utf8name != nullptr) {
+      CHECK_NEW_FROM_UTF8(env, property_name, p->utf8name);
+    } else {
+      v8::Local<v8::Value> property_value =
+        v8impl::V8LocalValueFromJsValue(p->name);
+
+      RETURN_STATUS_IF_FALSE(env, property_value->IsName(), napi_name_expected);
+      property_name = property_value.As<v8::Name>();
+    }
 
     v8::PropertyAttribute attributes =
         v8impl::V8PropertyAttributesFromAttributes(
             (napi_property_attributes)(p->attributes & ~napi_static_property));
 
-    if (p->method) {
+    if (p->method != nullptr) {
       v8::Local<v8::Object> cbdata =
           v8impl::CreateFunctionCallbackData(env, p->method, p->data);
 
@@ -1106,13 +1119,13 @@ napi_status napi_define_properties(napi_env env,
       v8::Local<v8::FunctionTemplate> t = v8::FunctionTemplate::New(
           isolate, v8impl::FunctionCallbackWrapper::Invoke, cbdata);
 
-      auto define_maybe =
-          obj->DefineOwnProperty(context, name, t->GetFunction(), attributes);
+      auto define_maybe = obj->DefineOwnProperty(
+        context, property_name, t->GetFunction(), attributes);
 
       if (!define_maybe.FromMaybe(false)) {
         return napi_set_last_error(env, napi_generic_failure);
       }
-    } else if (p->getter || p->setter) {
+    } else if (p->getter != nullptr || p->setter != nullptr) {
       v8::Local<v8::Object> cbdata = v8impl::CreateAccessorCallbackData(
         env,
         p->getter,
@@ -1121,7 +1134,7 @@ napi_status napi_define_properties(napi_env env,
 
       auto set_maybe = obj->SetAccessor(
           context,
-          name,
+          property_name,
           p->getter ? v8impl::GetterCallbackWrapper::Invoke : nullptr,
           p->setter ? v8impl::SetterCallbackWrapper::Invoke : nullptr,
           cbdata,
@@ -1135,7 +1148,7 @@ napi_status napi_define_properties(napi_env env,
       v8::Local<v8::Value> value = v8impl::V8LocalValueFromJsValue(p->value);
 
       auto define_maybe =
-          obj->DefineOwnProperty(context, name, value, attributes);
+          obj->DefineOwnProperty(context, property_name, value, attributes);
 
       if (!define_maybe.FromMaybe(false)) {
         return napi_set_last_error(env, napi_invalid_arg);
@@ -1428,33 +1441,24 @@ napi_status napi_get_cb_info(
     napi_value* this_arg,  // [out] Receives the JS 'this' arg for the call
     void** data) {         // [out] Receives the data pointer for the callback.
   CHECK_ENV(env);
-  CHECK_ARG(env, argc);
-  CHECK_ARG(env, argv);
-  CHECK_ARG(env, this_arg);
-  CHECK_ARG(env, data);
 
   v8impl::CallbackWrapper* info =
       reinterpret_cast<v8impl::CallbackWrapper*>(cbinfo);
 
-  info->Args(argv, std::min(*argc, info->ArgsLength()));
-  *argc = info->ArgsLength();
-  *this_arg = info->This();
-  *data = info->Data();
+  if (argv != nullptr) {
+    CHECK_ARG(env, argc);
+    info->Args(argv, std::min(*argc, info->ArgsLength()));
+  }
+  if (argc != nullptr) {
+    *argc = info->ArgsLength();
+  }
+  if (this_arg != nullptr) {
+    *this_arg = info->This();
+  }
+  if (data != nullptr) {
+    *data = info->Data();
+  }
 
-  return napi_ok;
-}
-
-napi_status napi_get_cb_args_length(napi_env env,
-                                    napi_callback_info cbinfo,
-                                    size_t* result) {
-  // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because no V8 APIs are called.
-  CHECK_ENV(env);
-  CHECK_ARG(env, result);
-
-  v8impl::CallbackWrapper* info =
-      reinterpret_cast<v8impl::CallbackWrapper*>(cbinfo);
-
-  *result = info->ArgsLength();
   return napi_ok;
 }
 
@@ -1469,51 +1473,6 @@ napi_status napi_is_construct_call(napi_env env,
       reinterpret_cast<v8impl::CallbackWrapper*>(cbinfo);
 
   *result = info->IsConstructCall();
-  return napi_ok;
-}
-
-// copy encoded arguments into provided buffer or return direct pointer to
-// encoded arguments array?
-napi_status napi_get_cb_args(napi_env env,
-                             napi_callback_info cbinfo,
-                             napi_value* buf,
-                             size_t bufsize) {
-  // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because no V8 APIs are called.
-  CHECK_ENV(env);
-  CHECK_ARG(env, buf);
-
-  v8impl::CallbackWrapper* info =
-      reinterpret_cast<v8impl::CallbackWrapper*>(cbinfo);
-
-  info->Args(buf, bufsize);
-  return napi_ok;
-}
-
-napi_status napi_get_cb_this(napi_env env,
-                             napi_callback_info cbinfo,
-                             napi_value* result) {
-  // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because no V8 APIs are called.
-  CHECK_ENV(env);
-  CHECK_ARG(env, result);
-
-  v8impl::CallbackWrapper* info =
-      reinterpret_cast<v8impl::CallbackWrapper*>(cbinfo);
-
-  *result = info->This();
-  return napi_ok;
-}
-
-napi_status napi_get_cb_data(napi_env env,
-                             napi_callback_info cbinfo,
-                             void** result) {
-  // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because no V8 APIs are called.
-  CHECK_ENV(env);
-  CHECK_ARG(env, result);
-
-  v8impl::CallbackWrapper* info =
-      reinterpret_cast<v8impl::CallbackWrapper*>(cbinfo);
-
-  *result = info->Data();
   return napi_ok;
 }
 
