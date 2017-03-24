@@ -7,12 +7,19 @@
     const char* errorMessage = error->error_message;                           \
     errorMessage = errorMessage ? errorMessage : "empty error message";        \
     napi_throw_error((env), errorMessage);                                     \
-    return;                                                                    \
+    return NULL;                                                               \
   }
 
-void RunCallback(napi_env env, napi_callback_info info) {
+napi_value RunCallback(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
   napi_value args[1];
-  NAPI_CALL(env, napi_get_cb_args(env, info, args, 1));
+  NAPI_CALL(napi_get_cb_info(
+    env,
+    info,
+    &argc,
+    args,
+    NULL,
+    NULL));
 
   napi_value cb = args[0];
 
@@ -23,20 +30,30 @@ void RunCallback(napi_env env, napi_callback_info info) {
   NAPI_CALL(env, napi_get_global(env, &global));
 
   NAPI_CALL(env, napi_call_function(env, global, cb, 1, argv, NULL));
+
+  return NULL;
 }
 
-void RunCallbackWithRecv(napi_env env, napi_callback_info info) {
+napi_value RunCallbackWithRecv(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
   napi_value args[2];
-  NAPI_CALL(env, napi_get_cb_args(env, info, args, 2));
+  NAPI_CALL(napi_get_cb_info(
+    env,
+    info,
+    &argc,
+    args,
+    NULL,
+    NULL));
 
   napi_value cb = args[0];
   napi_value recv = args[1];
 
-  NAPI_CALL(env, napi_call_function(env, recv, cb, 0, NULL, NULL));
+  NAPI_CALL(napi_call_function(env, recv, cb, 0, NULL, NULL));
+  return NULL;
 }
 
 #define DECLARE_NAPI_METHOD(name, func)                          \
-  { name, func, 0, 0, 0, napi_default, 0 }
+  { name, 0, func, 0, 0, 0, napi_default, 0 }
 
 void Init(napi_env env, napi_value exports, napi_value module, void* priv) {
   napi_status status;

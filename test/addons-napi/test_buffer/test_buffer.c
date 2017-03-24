@@ -7,17 +7,25 @@
     napi_throw_error(                                   \
         (env),                                          \
         "assertion (" #assertion ") failed: " message); \
-    return;                                             \
+    return NULL;                                        \
   }
 
-#define NAPI_CALL(env, theCall)                                                \
-  if ((theCall) != napi_ok) {                                                  \
-    const napi_extended_error_info* error;                                     \
-    napi_get_last_error_info((env), &error);                                   \
-    const char* errorMessage = error->error_message;                           \
-    errorMessage = errorMessage ? errorMessage : "empty error message";        \
-    napi_throw_error((env), errorMessage);                                     \
-    return;                                                                    \
+#define GET_AND_THROW_LAST_ERROR(env)                                   \
+  const napi_extended_error_info* error;                                \
+  napi_get_last_error_info((env), &error);                              \
+  const char* error_message = error->error_message;                     \
+  error_message = error_message ? error_message : "empty error message";\
+  napi_throw_error((env), error_message);
+
+#define NAPI_CALL(env, the_call)                                        \
+  if ((the_call) != napi_ok) {                                          \
+    GET_AND_THROW_LAST_ERROR((env));                                    \
+    return NULL;                                                        \
+  }
+
+#define NAPI_CALL_NO_RETURN(env, the_call)                              \
+  if ((the_call) != napi_ok) {                                          \
+    GET_AND_THROW_LAST_ERROR((env));                                    \
   }
 
 static const char theText[] =
@@ -37,7 +45,7 @@ static void noopDeleter(napi_env env, void* data, void* finalize_hint) {
   deleterCallCount++;
 }
 
-void newBuffer(napi_env env, napi_callback_info info) {
+napi_value newBuffer(napi_env env, napi_callback_info info) {
   napi_value theBuffer;
   char* theCopy;
   const unsigned int kBufferSize = sizeof(theText);
@@ -50,10 +58,11 @@ void newBuffer(napi_env env, napi_callback_info info) {
                 &theBuffer));
   JS_ASSERT(env, theCopy, "Failed to copy static text for newBuffer");
   memcpy(theCopy, theText, kBufferSize);
-  NAPI_CALL(env, napi_set_return_value(env, info, theBuffer));
+
+  return theBuffer;
 }
 
-void newExternalBuffer(napi_env env, napi_callback_info info) {
+napi_value newExternalBuffer(napi_env env, napi_callback_info info) {
   napi_value theBuffer;
   char* theCopy = strdup(theText);
   JS_ASSERT(env, theCopy, "Failed to copy static text for newExternalBuffer");
@@ -65,28 +74,37 @@ void newExternalBuffer(napi_env env, napi_callback_info info) {
                 deleteTheText,
                 NULL,  // finalize_hint
                 &theBuffer));
-  NAPI_CALL(env, napi_set_return_value(env, info, theBuffer));
+
+  return theBuffer;
 }
 
-void getDeleterCallCount(napi_env env, napi_callback_info info) {
+napi_value getDeleterCallCount(napi_env env, napi_callback_info info) {
   napi_value callCount;
   NAPI_CALL(env, napi_create_number(env, deleterCallCount, &callCount));
-  NAPI_CALL(env, napi_set_return_value(env, info, callCount));
+  return callCount;
 }
 
-void copyBuffer(napi_env env, napi_callback_info info) {
+napi_value copyBuffer(napi_env env, napi_callback_info info) {
   napi_value theBuffer;
   NAPI_CALL(env, napi_create_buffer_copy(
     env, sizeof(theText), theText, NULL, &theBuffer));
-  NAPI_CALL(env, napi_set_return_value(env, info, theBuffer));
+  return theBuffer;
 }
 
-void bufferHasInstance(napi_env env, napi_callback_info info) {
-  size_t argc;
-  NAPI_CALL(env, napi_get_cb_args_length(env, info, &argc));
+napi_value bufferHasInstance(napi_env env, napi_callback_info info) {
+  napi_status status;
+  size_t argc = 1;
+  napi_value args[1];
+  status = napi_get_cb_info(
+    env,
+    info,
+    &argc,
+    args,
+    NULL,
+    NULL);
+  if (status != napi_ok) return NULL;
   JS_ASSERT(env, argc == 1, "Wrong number of arguments");
-  napi_value theBuffer;
-  NAPI_CALL(env, napi_get_cb_args(env, info, &theBuffer, 1));
+  napi_value theBuffer = args[0];
   bool hasInstance;
   napi_valuetype theType;
   NAPI_CALL(env, napi_typeof(env, theBuffer, &theType));
@@ -97,16 +115,25 @@ void bufferHasInstance(napi_env env, napi_callback_info info) {
   JS_ASSERT(env, hasInstance, "bufferHasInstance: instance is not a buffer");
   napi_value returnValue;
   NAPI_CALL(env, napi_get_boolean(env, hasInstance, &returnValue));
-  NAPI_CALL(env, napi_set_return_value(env, info, returnValue));
+  return returnValue;
 }
 
-void bufferInfo(napi_env env, napi_callback_info info) {
-  size_t argc;
-  NAPI_CALL(env, napi_get_cb_args_length(env, info, &argc));
+napi_value bufferInfo(napi_env env, napi_callback_info info) {
+  napi_status status;
+  size_t argc = 1;
+  napi_value args[1];
+  status = napi_get_cb_info(
+    env,
+    info,
+    &argc,
+    args,
+    NULL,
+    NULL);
+  if (status != napi_ok) return NULL;
   JS_ASSERT(env, argc == 1, "Wrong number of arguments");
-  napi_value theBuffer, returnValue;
-  NAPI_CALL(env, napi_get_cb_args(env, info, &theBuffer, 1));
-  char* bufferData;
+  napi_value theBuffer = args[0];
+  char *bufferData;
+  napi_value returnValue;
   size_t bufferLength;
   NAPI_CALL(env,
             napi_get_buffer_info(
@@ -117,10 +144,10 @@ void bufferInfo(napi_env env, napi_callback_info info) {
   NAPI_CALL(env, napi_get_boolean(env,
     !strcmp(bufferData, theText) && bufferLength == sizeof(theText),
     &returnValue));
-  NAPI_CALL(env, napi_set_return_value(env, info, returnValue));
+  return returnValue;
 }
 
-void staticBuffer(napi_env env, napi_callback_info info) {
+napi_value staticBuffer(napi_env env, napi_callback_info info) {
   napi_value theBuffer;
   NAPI_CALL(
       env,
@@ -130,18 +157,19 @@ void staticBuffer(napi_env env, napi_callback_info info) {
                                   noopDeleter,
                                   NULL,  // finalize_hint
                                   &theBuffer));
-  NAPI_CALL(env, napi_set_return_value(env, info, theBuffer));
+  return theBuffer;
 }
 
 #define DECLARE_NAPI_METHOD(name, func)                          \
-  { name, func, 0, 0, 0, napi_default, 0 }
+  { name, 0, func, 0, 0, 0, napi_default, 0 }
 
 void Init(napi_env env, napi_value exports, napi_value module, void* priv) {
   napi_value theValue;
 
-  NAPI_CALL(env, napi_create_string_utf8(env,
+  NAPI_CALL_NO_RETURN(env, napi_create_string_utf8(env,
             theText, sizeof(theText), &theValue));
-  NAPI_CALL(env, napi_set_named_property(env, exports, "theText", theValue));
+  NAPI_CALL_NO_RETURN(env, 
+            napi_set_named_property(env, exports, "theText", theValue));
 
   napi_property_descriptor methods[] = {
       DECLARE_NAPI_METHOD("newBuffer", newBuffer),
@@ -152,7 +180,7 @@ void Init(napi_env env, napi_value exports, napi_value module, void* priv) {
       DECLARE_NAPI_METHOD("bufferInfo", bufferInfo),
       DECLARE_NAPI_METHOD("staticBuffer", staticBuffer),
   };
-  NAPI_CALL(env,
+  NAPI_CALL_NO_RETURN(env,
             napi_define_properties(
                 env, exports, sizeof(methods) / sizeof(methods[0]), methods));
 }
