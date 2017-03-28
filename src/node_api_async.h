@@ -1,4 +1,4 @@
-#ifndef SRC_NODE_API_ASYNC_H_
+﻿#ifndef SRC_NODE_API_ASYNC_H_
 #define SRC_NODE_API_ASYNC_H_
 
 #include <stdlib.h>
@@ -7,13 +7,14 @@
 
 EXTERN_C_START
 
-NAPI_EXTERN napi_work napi_create_async_work();
-NAPI_EXTERN void napi_delete_async_work(napi_work w);
-NAPI_EXTERN void napi_async_set_data(napi_work w, void* data);
-NAPI_EXTERN void napi_async_set_execute(napi_work w, void (*execute)(void*));
-NAPI_EXTERN void napi_async_set_complete(napi_work w, void (*complete)(void*));
-NAPI_EXTERN void napi_async_set_destroy(napi_work w, void (*destroy)(void*));
-NAPI_EXTERN void napi_async_queue_worker(napi_work w);
+napi_status napi_create_async_work(napi_env env,
+                                   napi_async_callback execute,
+                                   napi_async_callback complete,
+                                   napi_async_callback destroy,
+                                   void* data,
+                                   napi_async_work* result);
+napi_status napi_delete_async_work(napi_env env, napi_async_work work);
+napi_status napi_queue_async_work(napi_env env, napi_async_work work);
 
 EXTERN_C_END
 
